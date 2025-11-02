@@ -1,0 +1,274 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Family Helper Chat</title>
+  <style>
+    :root{
+      --bg:#0b0f14; /* dark slate */
+      --panel:#111821;
+      --soft:#1a2230;
+      --accent:#7dd3fc; /* sky */
+      --accent-2:#a78bfa; /* violet */
+      --text:#e6edf3;
+      --muted:#9fb0c3;
+      --good:#34d399;
+      --warn:#fbbf24;
+      --danger:#f87171;
+      --radius:14px;
+    }
+    @media (prefers-color-scheme: light){
+      :root{ --bg:#f5f7fb; --panel:#ffffff; --soft:#eef2f8; --text:#111827; --muted:#5b6b7c; }
+    }
+
+    html,body{height:100%;}
+    body{margin:0;background:var(--bg);color:var(--text);font:16px/1.4 system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, sans-serif;}
+
+    .app{display:flex;flex-direction:column;height:100vh;max-height:100dvh;}
+    header{
+      position:sticky;top:0;z-index:5;
+      display:flex;align-items:center;justify-content:space-between;
+      gap:.75rem;padding:.85rem 1rem;background:linear-gradient(180deg,var(--panel),var(--soft));
+      border-bottom:1px solid rgba(255,255,255,.06);
+    }
+    header h1{font-size:1rem;margin:0;letter-spacing:.4px}
+    header .badge{display:inline-flex;align-items:center;gap:.35rem;background:rgba(125,211,252,.12);color:var(--accent);padding:.25rem .55rem;border-radius:999px;font-size:.75rem}
+
+    .chat{flex:1;overflow:auto;padding:1rem;scroll-behavior:smooth}
+    .empty{opacity:.7;text-align:center;margin-top:15vh}
+
+    .msg{display:grid;grid-template-columns:auto 1fr;gap:.6rem;margin:.6rem 0;}
+    .avatar{width:28px;height:28px;border-radius:50%;display:grid;place-items:center;background:var(--soft);font-size:.8rem;color:var(--muted);}
+    .bubble{background:var(--panel);border:1px solid rgba(255,255,255,.06);padding:.7rem .85rem;border-radius:var(--radius);max-width:75%;}
+    .me{grid-template-columns:1fr auto;}
+    .me .bubble{background:linear-gradient(180deg,rgba(167,139,250,.15),rgba(125,211,252,.12));border-color:rgba(167,139,250,.35);justify-self:end}
+    .me .avatar{background:rgba(167,139,250,.2);color:var(--accent-2)}
+    .bot .avatar{background:rgba(125,211,252,.15);color:var(--accent)}
+
+    .suggest{position:sticky;bottom:0;z-index:4;background:linear-gradient(0deg,var(--bg),transparent 60%);padding:0 .75rem .5rem}
+    .chips{display:flex;gap:.5rem;flex-wrap:wrap}
+    .chip{border:1px dashed rgba(255,255,255,.18);background:var(--soft);color:var(--text);padding:.4rem .6rem;border-radius:999px;font-size:.85rem;cursor:pointer}
+
+    .composer{display:flex;gap:.5rem;padding:.6rem;border-top:1px solid rgba(255,255,255,.06);background:var(--panel)}
+    .composer input{flex:1;border:1px solid rgba(255,255,255,.08);background:var(--soft);color:var(--text);padding:.65rem .8rem;border-radius:10px;outline:none}
+    .composer button{border:0;padding:.7rem 1rem;border-radius:10px;background:linear-gradient(180deg,var(--accent-2),var(--accent));color:#061018;cursor:pointer;font-weight:700}
+    .composer button:disabled{opacity:.6;cursor:not-allowed}
+
+    .note{font-size:.8rem;color:var(--muted);}
+    a{color:var(--accent)}
+  </style>
+</head>
+<body>
+  <div class="app" role="application" aria-label="Family Helper Chatbot">
+    <header>
+      <h1>Family Helper</h1>
+      <span class="badge" id="badge">ready</span>
+    </header>
+    <main class="chat" id="chat" aria-live="polite">
+      <div class="empty" id="empty">
+        <p>Welcome! I can fetch schedules, suggest lunches, remind about school events, and keep simple lists.</p>
+        <p class="note">Psst: I run fully in the browser. No account, no tracking. Your messages live in this device's storage.</p>
+      </div>
+    </main>
+    <div class="suggest">
+      <div class="chips" id="chips"></div>
+    </div>
+    <form class="composer" id="form" autocomplete="off">
+      <input id="input" type="text" required placeholder="Ask: what's this week look like? add bread to groceries…" aria-label="Message" />
+      <button id="send" type="submit">Send</button>
+    </form>
+  </div>
+
+  <script>
+  ;(() => {
+    const chatEl = document.getElementById('chat');
+    const emptyEl = document.getElementById('empty');
+    const form = document.getElementById('form');
+    const input = document.getElementById('input');
+    const chips = document.getElementById('chips');
+    const badge = document.getElementById('badge');
+
+    // --- simple state ---
+    const state = {
+      groceries: JSON.parse(localStorage.getItem('fh_groceries')||'[]'),
+      todos: JSON.parse(localStorage.getItem('fh_todos')||'[]'),
+      name: localStorage.getItem('fh_name') || '',
+      history: JSON.parse(localStorage.getItem('fh_history')||'[]')
+    }
+
+    const SUGGESTIONS = [
+      'schedule for this week',
+      'add milk to groceries',
+      'show groceries',
+      'clear groceries',
+      'new todo: sign permission slip',
+      'what’s for easy lunches?',
+      'homework helper: fractions tips',
+      'how do I embed our Google Calendar?'
+    ];
+
+    function save(){
+      localStorage.setItem('fh_groceries', JSON.stringify(state.groceries));
+      localStorage.setItem('fh_todos', JSON.stringify(state.todos));
+      localStorage.setItem('fh_history', JSON.stringify(state.history));
+    }
+
+    // accessibility: keep focus sensible in iframe
+    function focusInputSoon(){
+      setTimeout(()=>input.focus(), 0);
+    }
+
+    function el(tag, opts={}){
+      const n = document.createElement(tag);
+      if(opts.class) n.className = opts.class;
+      if(opts.html) n.innerHTML = opts.html;
+      if(opts.text) n.textContent = opts.text;
+      return n;
+    }
+
+    function addMessage(role, text){
+      if (emptyEl) emptyEl.remove();
+      const row = el('div', {class: `msg ${role}`});
+      const avatar = el('div', {class:'avatar', text: role === 'me' ? '👤' : '🤖'});
+      const bubble = el('div', {class:'bubble'});
+      bubble.innerHTML = linkify(escapeHtml(text));
+      if(role==='me'){ row.append(bubble, avatar); }
+      else { row.append(avatar, bubble); }
+      chatEl.appendChild(row);
+      chatEl.scrollTop = chatEl.scrollHeight;
+    }
+
+    function escapeHtml(s){
+      return s.replace(/[&<>\"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+    }
+    function linkify(s){
+      return s.replace(/(https?:\/\/[^\s]+)/g, '<a href="$1" target="_blank" rel="noopener">$1<\/a>');
+    }
+
+    function reply(text){
+      addMessage('bot', text);
+      state.history.push({role:'assistant', content:text, t:Date.now()});
+      save();
+    }
+
+    function setBadge(text){ badge.textContent = text; }
+
+    function intentRouter(raw){
+      const text = raw.trim();
+      const t = text.toLowerCase();
+
+      // name capture for a bit of personalization
+      const nameMatch = t.match(/my name is (.+)/);
+      if(nameMatch){
+        state.name = nameMatch[1].split(/\s+/)[0];
+        localStorage.setItem('fh_name', state.name);
+        return `Nice to meet you, ${state.name}. I’ll remember that on this device.`;
+      }
+
+      // groceries
+      if(/^add\s+.+\s+to\s+grocer(y|ies)/.test(t)){
+        const item = t.replace(/^add\s+|\s+to\s+grocer(y|ies).*/g,'');
+        if(item){
+          state.groceries.push({ item, done:false }); save();
+          return `Added to groceries: **${item}**. Say “show groceries” to review.`;
+        }
+      }
+      if(/^(show|list)\s+grocer(y|ies)/.test(t)){
+        if(!state.groceries.length) return 'Groceries list is empty. Add something?';
+        return 'Groceries:\n- ' + state.groceries.map(g=>g.item).join('\n- ');
+      }
+      if(/^clear\s+grocer(y|ies)/.test(t)){
+        state.groceries = []; save();
+        return 'Cleared the groceries list.';
+      }
+
+      // todos
+      if(/^new\s+todo:\s*/.test(t)){
+        const todo = text.replace(/^new\s+todo:\s*/i,'');
+        if(todo){ state.todos.push({todo, done:false}); save(); return `Added todo: ${todo}`; }
+      }
+      if(/^(show|list)\s+t(ask|odo)s?/.test(t)){
+        if(!state.todos.length) return 'No todos yet.';
+        return 'Todos:\n' + state.todos.map((t,i)=>` ${i+1}. ${t.todo}`).join('\n');
+      }
+
+      // schedule
+      if(t.includes('schedule') || t.includes("what's this week") || t.includes('this week look')){
+        return [
+          'Here\'s your quick schedule hub:',
+          '• Family Calendar (week view): if your site embeds Google Calendar, it\'ll reflect here.',
+          '• Tip: Share a read-only family calendar and embed it on the site.',
+          '\nCalendar tips: https://calendar.google.com/'
+        ].join('\n');
+      }
+
+      // lunch ideas
+      if(t.includes('lunch')){
+        return 'Fast lunch ideas: turkey hummus wraps, bean & rice bowls, veggie pasta salad, tuna + crackers, overnight oats + fruit. Want a full plan? Add a todo like "prep 3 bowls Sun".';
+      }
+
+      // homework helper: simple, offline hints
+      if(t.includes('homework helper') || t.includes('fractions')){
+        return 'Fractions trick: find common denominator, convert, then add/subtract. Example: 1/3 + 1/4 → 4/12 + 3/12 = 7/12. Practice: convert 2/5 + 1/10. (Answer: 1/2)';
+      }
+
+      // help with embed
+      if(t.includes('embed') && t.includes('calendar')){
+        return 'In Canva: use the Embed block with your Google Calendar public URL. If it refuses the iframe code, create a simple page that embeds your calendar and iframe THAT on Canva. I can generate that page, too.';
+      }
+
+      // fallback
+      return `I don't have a built-in play for that yet, but I logged it. Try one of the suggestion chips below.`;
+    }
+
+    function renderChips(){
+      chips.innerHTML = '';
+      SUGGESTIONS.forEach(s => {
+        const c = el('button', {class:'chip', text:s});
+        c.type = 'button';
+        c.addEventListener('click', ()=>{
+          input.value = s; form.dispatchEvent(new Event('submit'));
+        });
+        chips.appendChild(c);
+      })
+    }
+
+    // simple welcome
+    if(!state.history.length){
+      reply(`Hi${state.name? ' ' + state.name: ''}! Try: "schedule for this week", "add milk to groceries", or "homework helper".`)
+    } else {
+      state.history.forEach(m => addMessage(m.role==='user'?'me':'bot', m.content));
+    }
+    renderChips();
+
+    // postMessage bridge (optional): parent can send {type:'setName', name:'...'}
+    window.addEventListener('message', (e)=>{
+      const d = e.data || {};
+      if(d && d.type === 'setName' && d.name){
+        state.name = d.name; localStorage.setItem('fh_name', state.name);
+        reply(`Got it. I\'ll call you ${state.name}.`)
+      }
+    });
+
+    form.addEventListener('submit', (e)=>{
+      e.preventDefault();
+      const text = input.value.trim(); if(!text) return;
+      addMessage('me', text);
+      state.history.push({role:'user', content:text, t:Date.now()});
+      save();
+      setBadge('thinking');
+      try{
+        const out = intentRouter(text);
+        reply(out);
+      } finally {
+        setBadge('ready');
+      }
+      input.value='';
+      focusInputSoon();
+    });
+
+  })();
+  </script>
+</body>
+</html>
